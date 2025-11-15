@@ -5,9 +5,9 @@
 		<LangVersion>latest</LangVersion>
 		<!-- NuGet info -->
 		<PackageId>Mubai.EventBus.InMemory</PackageId>
-		<Version>0.1.0</Version>
+		<Version>0.1.1</Version>
 		<Title>Mubai.EventBus.InMemory</Title>
-		<Description>Production-ready Snowflake ID generator for .NET.</Description>
+		<Description>In-memory event bus for modular monolith .NET applications, suitable for simple event-driven communication, development, and testing.</Description>
 		<Authors>mubai-gl</Authors>
 		<Company>mubai-gl</Company>
 		<Copyright>© 2025 mubai-gl. All rights reserved.</Copyright>
@@ -25,10 +25,7 @@
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
-	</ItemGroup>
-
-	<ItemGroup>
-		<ProjectReference Include="..\\Mubai.EventBus\\Mubai.EventBus.csproj" />
+		<PackageReference Include="Mubai.EventBus" Version="0.1.1" />
 	</ItemGroup>
 
 </Project>

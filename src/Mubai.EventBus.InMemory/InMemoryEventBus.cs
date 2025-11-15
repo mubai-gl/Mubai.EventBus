@@ -7,17 +7,18 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Mubai.EventBus.Abstractions;
+using Mubai.EventBus.Events;
 
 namespace Mubai.EventBus.InMemory
 {
     /// <summary>
     /// Simple in-memory implementation of <see cref="IEventBus"/>.
     /// </summary>
-    public sealed class InMemoryEventBus : IEventBus
+    public sealed class InMemoryEventBus : IEventBus, IDisposable
     {
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<InMemoryEventBus> _logger;
-        private readonly ConcurrentDictionary<Type, ConcurrentDictionary<Guid, Func<IServiceProvider, object, CancellationToken, Task>>> _handlers = new();
+        private readonly ConcurrentDictionary<Type, ConcurrentDictionary<object, Func<IServiceProvider, object, CancellationToken, ValueTask>>> _handlers = new();
         private bool _disposed;
 
         public InMemoryEventBus(IServiceScopeFactory scopeFactory, ILogger<InMemoryEventBus> logger)
@@ -26,7 +27,8 @@ namespace Mubai.EventBus.InMemory
             _logger = logger ?? NullLogger<InMemoryEventBus>.Instance;
         }
 
-        public async Task PublishAsync<TEvent>(TEvent @event, CancellationToken cancellationToken = default)
+        public async ValueTask PublishAsync<TEvent>(TEvent @event, CancellationToken cancellationToken = default)
+            where TEvent : IntegrationEvent
         {
             ThrowIfDisposed();
             if (@event is null)
@@ -52,56 +54,105 @@ namespace Mubai.EventBus.InMemory
             }
         }
 
-        public IDisposable Subscribe<TEvent, THandler>()
-            where THandler : class, IIntegrationEventHandler<TEvent>
+        public ValueTask<IDisposable> SubscribeAsync<TEvent, THandler>(CancellationToken cancellationToken = default)
+            where TEvent : IntegrationEvent
+            where THandler : IIntegrationEventHandler<TEvent>
         {
             ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
 
-            var subscriptionId = Register(typeof(TEvent), async (provider, evt, ct) =>
+            var handlers = _handlers.GetOrAdd(
+                typeof(TEvent),
+                _ => new ConcurrentDictionary<object, Func<IServiceProvider, object, CancellationToken, ValueTask>>());
+
+            var handlerKey = typeof(THandler);
+            handlers[handlerKey] = async (provider, evt, ct) =>
             {
                 var handler = provider.GetRequiredService<THandler>();
                 await handler.HandleAsync((TEvent)evt, ct).ConfigureAwait(false);
-            });
+            };
 
             _logger.LogInformation(
                 "Subscribed handler {Handler} to event {EventType}",
                 typeof(THandler).FullName,
                 typeof(TEvent).Name);
 
-            return new Subscription(this, typeof(TEvent), subscriptionId);
+            return new ValueTask<IDisposable>(new Subscription(() =>
+            {
+                Remove(typeof(TEvent), handlerKey);
+                _logger.LogInformation(
+                    "Unsubscribed handler {Handler} from event {EventType}",
+                    typeof(THandler).FullName,
+                    typeof(TEvent).Name);
+            }));
         }
 
-        public IDisposable Subscribe<TEvent>(Func<TEvent, CancellationToken, Task> handler)
+        public ValueTask<IDisposable> SubscribeAsync<TEvent>(
+            Func<TEvent, CancellationToken, ValueTask> handler,
+            CancellationToken cancellationToken = default)
+            where TEvent : IntegrationEvent
         {
             ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
             if (handler is null)
             {
                 throw new ArgumentNullException(nameof(handler));
             }
 
-            var subscriptionId = Register(typeof(TEvent), (_, evt, ct) => handler((TEvent)evt, ct));
+            var handlers = _handlers.GetOrAdd(
+                typeof(TEvent),
+                _ => new ConcurrentDictionary<object, Func<IServiceProvider, object, CancellationToken, ValueTask>>());
+
+            handlers[handler] = (_, evt, ct) => handler((TEvent)evt, ct);
 
             _logger.LogInformation("Subscribed inline handler to event {EventType}", typeof(TEvent).Name);
 
-            return new Subscription(this, typeof(TEvent), subscriptionId);
+            return new ValueTask<IDisposable>(new Subscription(() =>
+            {
+                Remove(typeof(TEvent), handler);
+                _logger.LogInformation("Unsubscribed inline handler from event {EventType}", typeof(TEvent).Name);
+            }));
         }
 
-        private Guid Register(Type eventType, Func<IServiceProvider, object, CancellationToken, Task> callback)
+        public ValueTask UnsubscribeAsync<TEvent, THandler>(CancellationToken cancellationToken = default)
+            where TEvent : IntegrationEvent
+            where THandler : IIntegrationEventHandler<TEvent>
         {
-            var handlers = _handlers.GetOrAdd(
-                eventType,
-                _ => new ConcurrentDictionary<Guid, Func<IServiceProvider, object, CancellationToken, Task>>());
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
 
-            var id = Guid.NewGuid();
-            handlers[id] = callback;
-            return id;
+            Remove(typeof(TEvent), typeof(THandler));
+            _logger.LogInformation(
+                "Unsubscribed handler {Handler} from event {EventType}",
+                typeof(THandler).FullName,
+                typeof(TEvent).Name);
+
+            return default;
         }
 
-        internal void Remove(Type eventType, Guid subscriptionId)
+        public ValueTask UnsubscribeAsync<TEvent>(
+            Func<TEvent, CancellationToken, ValueTask> handler,
+            CancellationToken cancellationToken = default)
+            where TEvent : IntegrationEvent
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (handler is null)
+            {
+                throw new ArgumentNullException(nameof(handler));
+            }
+
+            Remove(typeof(TEvent), handler);
+            _logger.LogInformation("Unsubscribed inline handler from event {EventType}", typeof(TEvent).Name);
+
+            return default;
+        }
+
+        private void Remove(Type eventType, object key)
         {
             if (_handlers.TryGetValue(eventType, out var handlers))
             {
-                handlers.TryRemove(subscriptionId, out _);
+                handlers.TryRemove(key, out _);
 
                 if (handlers.IsEmpty)
                 {
@@ -121,12 +172,6 @@ namespace Mubai.EventBus.InMemory
             _handlers.Clear();
         }
 
-        public ValueTask DisposeAsync()
-        {
-            Dispose();
-            return new ValueTask(Task.CompletedTask);
-        }
-
         private void ThrowIfDisposed()
         {
             if (_disposed)
@@ -135,34 +180,19 @@ namespace Mubai.EventBus.InMemory
             }
         }
 
-        private sealed class Subscription : IDisposable, IAsyncDisposable
+        private sealed class Subscription : IDisposable
         {
-            private readonly InMemoryEventBus _bus;
-            private readonly Type _eventType;
-            private readonly Guid _subscriptionId;
+            private readonly Action _dispose;
             private int _disposed;
 
-            public Subscription(InMemoryEventBus bus, Type eventType, Guid subscriptionId)
-            {
-                _bus = bus ?? throw new ArgumentNullException(nameof(bus));
-                _eventType = eventType ?? throw new ArgumentNullException(nameof(eventType));
-                _subscriptionId = subscriptionId;
-            }
+            public Subscription(Action dispose) => _dispose = dispose ?? throw new ArgumentNullException(nameof(dispose));
 
             public void Dispose()
             {
-                if (Interlocked.Exchange(ref _disposed, 1) == 1)
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
                 {
-                    return;
+                    _dispose();
                 }
-
-                _bus.Remove(_eventType, _subscriptionId);
-            }
-
-            public ValueTask DisposeAsync()
-            {
-                Dispose();
-                return new ValueTask(Task.CompletedTask);
             }
         }
     }

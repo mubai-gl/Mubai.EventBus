@@ -5,9 +5,9 @@
 		<LangVersion>latest</LangVersion>
 		<!-- NuGet info -->
 		<PackageId>Mubai.EventBus</PackageId>
-		<Version>0.1.0</Version>
+		<Version>0.1.1</Version>
 		<Title>Mubai.EventBus</Title>
-		<Description>Production-ready Snowflake ID generator for .NET.</Description>
+		<Description>Core abstractions for event-driven communication in .NET applications, including event bus, event handlers, and integration events.</Description>
 		<Authors>mubai-gl</Authors>
 		<Company>mubai-gl</Company>
 		<Copyright>© 2025 mubai-gl. All rights reserved.</Copyright>

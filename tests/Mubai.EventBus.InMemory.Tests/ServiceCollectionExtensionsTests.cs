@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Mubai.EventBus.Abstractions;
+using Mubai.EventBus.Events;
 using Mubai.EventBus.InMemory;
 using Xunit;
 
@@ -33,7 +34,8 @@ public class ServiceCollectionExtensionsTests
         Assert.IsType<RegisteredHandler>(handler);
     }
 
-    private sealed record RegisteredEvent;
+    private sealed record RegisteredEvent()
+        : IntegrationEvent(Guid.NewGuid(), DateTimeOffset.UtcNow);
 
     private sealed class RegisteredHandler : IIntegrationEventHandler<RegisteredEvent>
     {
@@ -43,3 +45,4 @@ public class ServiceCollectionExtensionsTests
         }
     }
 }
+
