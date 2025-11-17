@@ -11,6 +11,18 @@ namespace Mubai.EventBus.InMemory.Tests;
 public class InMemoryEventBusTests
 {
     [Fact]
+    public void Dispose_CanBeCalledMultipleTimes()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus();
+        var provider = services.BuildServiceProvider();
+        var bus = (InMemoryEventBus)provider.GetRequiredService<IEventBus>();
+
+        bus.Dispose();
+        bus.Dispose();
+    }
+
+    [Fact]
     public async Task PublishAsync_InvokesTypedHandler()
     {
         var services = new ServiceCollection();
@@ -119,8 +131,269 @@ public class InMemoryEventBusTests
         Assert.Equal(0, count);
     }
 
+    [Fact]
+    public async Task PublishAsync_RetriesUntilSuccess_WhenHandlerEventuallySucceeds()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus(options =>
+        {
+            options.MaxRetryAttempts = 3;
+            options.InitialRetryDelay = TimeSpan.Zero;
+            options.ShouldRetry = _ => true;
+        });
+
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var attempts = 0;
+        await bus.SubscribeAsync<TestEvent>((evt, token) =>
+        {
+            attempts++;
+            if (attempts < 2)
+            {
+                throw new InvalidOperationException("try again");
+            }
+
+            return ValueTask.CompletedTask;
+        });
+
+        await bus.PublishAsync(new TestEvent("retry"));
+
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task PublishAsync_InvokesOnHandlerFailedAfterRetriesExhausted()
+    {
+        var services = new ServiceCollection();
+        IntegrationEvent? failedEvent = null;
+        int failedAttempt = 0;
+
+        services.AddInMemoryEventBus(options =>
+        {
+            options.MaxRetryAttempts = 2;
+            options.InitialRetryDelay = TimeSpan.Zero;
+            options.ShouldRetry = _ => true;
+            options.OnHandlerFailed = (evt, ex, attempt) =>
+            {
+                failedEvent = evt;
+                failedAttempt = attempt;
+            };
+        });
+
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        await bus.SubscribeAsync<TestEvent>((evt, token) => throw new InvalidOperationException("boom"));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => bus.PublishAsync(new TestEvent("boom")).AsTask());
+        Assert.Equal("boom", ex.Message);
+        Assert.NotNull(failedEvent);
+        Assert.Equal(2, failedAttempt);
+    }
+
+    [Fact]
+    public async Task PublishAsync_DefaultShouldRetry_RetriesTimeoutException()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus(options =>
+        {
+            options.MaxRetryAttempts = 2;
+            options.InitialRetryDelay = TimeSpan.Zero;
+            // Keep ShouldRetry null to use default.
+        });
+
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var attempts = 0;
+        await bus.SubscribeAsync<TestEvent>((evt, token) =>
+        {
+            attempts++;
+            throw new TimeoutException("transient");
+        });
+
+        await Assert.ThrowsAsync<TimeoutException>(() => bus.PublishAsync(new TestEvent("timeout")).AsTask());
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task PublishAsync_UsesExponentialBackoffBetweenAttempts()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus(options =>
+        {
+            options.MaxRetryAttempts = 3;
+            options.InitialRetryDelay = TimeSpan.FromMilliseconds(5);
+            options.BackoffFactor = 2;
+            options.UseExponentialBackoff = true;
+            options.ShouldRetry = _ => true;
+        });
+
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var attempts = 0;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        await bus.SubscribeAsync<TestEvent>((evt, token) =>
+        {
+            attempts++;
+            if (attempts < 3)
+            {
+                throw new InvalidOperationException("retry");
+            }
+
+            return ValueTask.CompletedTask;
+        });
+
+        await bus.PublishAsync(new TestEvent("backoff"));
+        stopwatch.Stop();
+
+        // Expected delay: 5ms + 10ms = 15ms (first attempt has no delay).
+        Assert.True(stopwatch.ElapsedMilliseconds >= 12, $"Elapsed {stopwatch.ElapsedMilliseconds}ms was shorter than expected backoff.");
+        Assert.Equal(3, attempts);
+    }
+
+    [Fact]
+    public async Task PublishAsync_HonorsNormalizedMaxRetryAttemptsMinimum()
+    {
+        var services = new ServiceCollection();
+        int failedAttempt = 0;
+
+        services.AddInMemoryEventBus(options =>
+        {
+            options.MaxRetryAttempts = 0; // normalized to 1
+            options.InitialRetryDelay = TimeSpan.Zero;
+            options.ShouldRetry = _ => true;
+            options.OnHandlerFailed = (_, _, attempt) => failedAttempt = attempt;
+        });
+
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        await bus.SubscribeAsync<TestEvent>((evt, token) => throw new TimeoutException("fail once"));
+
+        await Assert.ThrowsAsync<TimeoutException>(() => bus.PublishAsync(new TestEvent("once")).AsTask());
+        Assert.Equal(1, failedAttempt);
+    }
+
+    [Fact]
+    public async Task PublishAsync_SameEventIdDeliveredOnlyOnce()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus();
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var deliveries = 0;
+        var sharedEvent = new DuplicateEvent(Guid.NewGuid());
+
+        await bus.SubscribeAsync<DuplicateEvent>((evt, token) =>
+        {
+            Interlocked.Increment(ref deliveries);
+            return ValueTask.CompletedTask;
+        });
+
+        await bus.PublishAsync(sharedEvent);
+        await bus.PublishAsync(sharedEvent);
+
+        Assert.Equal(1, deliveries);
+    }
+
+    [Fact]
+    public async Task PublishAsync_MultipleHandlers_AllReceiveEvent()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus();
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var count1 = 0;
+        var count2 = 0;
+
+        await bus.SubscribeAsync<TestEvent>((evt, token) =>
+        {
+            Interlocked.Increment(ref count1);
+            return ValueTask.CompletedTask;
+        });
+
+        await bus.SubscribeAsync<TestEvent>((evt, token) =>
+        {
+            Interlocked.Increment(ref count2);
+            return ValueTask.CompletedTask;
+        });
+
+        await bus.PublishAsync(new TestEvent("all"));
+
+        Assert.Equal(1, count1);
+        Assert.Equal(1, count2);
+    }
+
+    [Fact]
+    public async Task PublishAsync_ReSubscribeAfterAllUnsubscribed_Works()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus();
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var callCount = 0;
+        ValueTask Handler(TestEvent evt, CancellationToken token)
+        {
+            Interlocked.Increment(ref callCount);
+            return ValueTask.CompletedTask;
+        }
+
+        var sub = await bus.SubscribeAsync<TestEvent>(Handler);
+        sub.Dispose();
+        await bus.PublishAsync(new TestEvent("ignored")); // should not invoke
+
+        await bus.SubscribeAsync<TestEvent>(Handler);
+        await bus.PublishAsync(new TestEvent("delivered"));
+
+        Assert.Equal(1, callCount);
+    }
+
+    [Fact]
+    public async Task PublishAsync_OnHandlerFailedException_IsSuppressed()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus(options =>
+        {
+            options.MaxRetryAttempts = 1;
+            options.InitialRetryDelay = TimeSpan.Zero;
+            options.ShouldRetry = _ => false;
+            options.OnHandlerFailed = (_, _, _) => throw new Exception("hook failure");
+        });
+
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        await bus.SubscribeAsync<TestEvent>((evt, token) => throw new InvalidOperationException("handler failure"));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => bus.PublishAsync(new TestEvent("fail")).AsTask());
+        Assert.Equal("handler failure", ex.Message);
+    }
+
+    [Fact]
+    public async Task PublishAsync_AfterDisposal_ThrowsObjectDisposedException()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus();
+        var provider = services.BuildServiceProvider();
+        var bus = (InMemoryEventBus)provider.GetRequiredService<IEventBus>();
+
+        bus.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => bus.PublishAsync(new TestEvent("disposed")).AsTask());
+    }
+
     private sealed record TestEvent(string Payload)
         : IntegrationEvent(Guid.NewGuid(), DateTimeOffset.UtcNow);
+
+    private sealed record DuplicateEvent(Guid EventId)
+        : IntegrationEvent(EventId, DateTimeOffset.UtcNow);
 
     private sealed class TestHandler : IIntegrationEventHandler<TestEvent>
     {

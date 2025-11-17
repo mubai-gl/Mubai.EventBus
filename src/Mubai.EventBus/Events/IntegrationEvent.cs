@@ -10,12 +10,12 @@ namespace Mubai.EventBus.Events
         /// <summary>
         /// Unique identifier of the event message.
         /// </summary>
-        Guid Id { get; }
+        public Guid Id { get; }
 
         /// <summary>
         /// Timestamp indicating when the event occurred.
         /// </summary>
-        DateTimeOffset OccurredOn { get; }
+        public DateTimeOffset OccurredOn { get; }
 
         public IntegrationEvent(Guid id, DateTimeOffset occurredOn)
         {
@@ -24,4 +24,3 @@ namespace Mubai.EventBus.Events
         }
     }
 }
-

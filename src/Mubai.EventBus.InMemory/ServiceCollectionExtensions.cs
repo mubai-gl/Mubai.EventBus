@@ -17,13 +17,22 @@ namespace Mubai.EventBus.InMemory
         /// <summary>
         /// Register the in-memory event bus.
         /// </summary>
-        public static IServiceCollection AddInMemoryEventBus(this IServiceCollection services)
+        public static IServiceCollection AddInMemoryEventBus(
+            this IServiceCollection services,
+            Action<InMemoryEventBusOptions>? configure = null)
         {
             services.TryAddSingleton<IEventBus>(provider =>
             {
                 var scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
                 var logger = provider.GetService<ILogger<InMemoryEventBus>>() ?? NullLogger<InMemoryEventBus>.Instance;
-                return new InMemoryEventBus(scopeFactory, logger);
+                var options = InMemoryEventBusOptions.Default;
+                if (configure is not null)
+                {
+                    options = new InMemoryEventBusOptions();
+                    configure(options);
+                }
+
+                return new InMemoryEventBus(scopeFactory, logger, options);
             });
             return services;
         }
