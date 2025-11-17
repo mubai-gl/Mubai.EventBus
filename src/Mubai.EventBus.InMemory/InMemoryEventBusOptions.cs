@@ -1,6 +1,7 @@
-using System;
+﻿using System;
 using System.Net.Http;
 using Mubai.EventBus.Events;
+using Mubai.EventBus.Exceptions;
 
 namespace Mubai.EventBus.InMemory
 {
@@ -35,13 +36,13 @@ namespace Mubai.EventBus.InMemory
         /// Optional predicate to decide if an exception should be retried.
         /// If null, a conservative default that only retries transient faults is used.
         /// </summary>
-        public Func<Exception, bool>? ShouldRetry { get; set; }
+        public Func<Exception, bool> ShouldRetry { get; set; }
 
         /// <summary>
         /// Optional callback when a handler fails after all retry attempts are exhausted.
         /// Parameters: the event, the last exception, and the attempt count at failure.
         /// </summary>
-        public Action<IntegrationEvent, Exception, int>? OnHandlerFailed { get; set; }
+        public Action<IntegrationEvent, Exception, int> OnHandlerFailed { get; set; }
 
         internal InMemoryEventBusOptions CloneAndNormalize()
         {
@@ -64,13 +65,12 @@ namespace Mubai.EventBus.InMemory
         /// </summary>
         internal static bool DefaultShouldRetry(Exception exception)
         {
-            if (exception is null)
+            if (exception is null || exception is NonRetryableException)
             {
                 return false;
             }
 
-            if (exception is TimeoutException ||
-                exception is HttpRequestException)
+            if (exception is TimeoutException || exception is HttpRequestException)
             {
                 return true;
             }

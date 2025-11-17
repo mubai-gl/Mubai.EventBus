@@ -5,7 +5,7 @@
 		<LangVersion>latest</LangVersion>
 		<!-- NuGet info -->
 		<PackageId>Mubai.EventBus</PackageId>
-		<Version>0.1.2</Version>
+		<Version>0.1.4</Version>
 		<Title>Mubai.EventBus</Title>
 		<Description>Core abstractions for event-driven communication in .NET applications, including event bus, event handlers, and integration events.</Description>
 		<Authors>mubai-gl</Authors>

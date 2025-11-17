@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading;
@@ -32,7 +32,7 @@ namespace Mubai.EventBus.InMemory
         public InMemoryEventBus(
             IServiceScopeFactory scopeFactory,
             ILogger<InMemoryEventBus> logger,
-            InMemoryEventBusOptions? options = null)
+            InMemoryEventBusOptions options = null)
         {
             _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
             _logger = logger ?? NullLogger<InMemoryEventBus>.Instance;

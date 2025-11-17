@@ -19,7 +19,7 @@ namespace Mubai.EventBus.InMemory
         /// </summary>
         public static IServiceCollection AddInMemoryEventBus(
             this IServiceCollection services,
-            Action<InMemoryEventBusOptions>? configure = null)
+            Action<InMemoryEventBusOptions> configure = null)
         {
             services.TryAddSingleton<IEventBus>(provider =>
             {
