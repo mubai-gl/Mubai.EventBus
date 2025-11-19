@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Linq;
+using System.Reflection;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Mubai.EventBus.Abstractions;
 using Mubai.EventBus.Events;
+using Mubai.EventBus.Exceptions;
 
 namespace Mubai.EventBus.InMemory
 {
@@ -20,14 +23,28 @@ namespace Mubai.EventBus.InMemory
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<InMemoryEventBus> _logger;
         private readonly InMemoryEventBusOptions _options;
+        private readonly JsonSerializerOptions _serializerOptions;
 
-        // Event type -> handlers keyed by handler identity (type or delegate instance).
-        private readonly ConcurrentDictionary<Type, ConcurrentDictionary<object, Func<IServiceProvider, object, CancellationToken, ValueTask>>> _handlers = new();
+        // Event name -> handlers keyed by handler identity (type or delegate instance).
+        private readonly ConcurrentDictionary<string, ConcurrentDictionary<object, HandlerRegistration>> _handlers = new();
 
         // Tracks handled IntegrationEvent.Id to provide in-memory idempotence.
-        private readonly ConcurrentDictionary<Guid, byte> _processedEvents = new();
+        private readonly ConcurrentDictionary<Guid, DateTimeOffset> _processedEvents = new();
+        private readonly ConcurrentQueue<(Guid EventId, DateTimeOffset Timestamp)> _processedEventOrder = new();
 
         private bool _disposed;
+
+        private sealed class HandlerRegistration
+        {
+            public HandlerRegistration(Type eventType, Func<IServiceProvider, object, CancellationToken, ValueTask> callback)
+            {
+                EventType = eventType ?? throw new ArgumentNullException(nameof(eventType));
+                Callback = callback ?? throw new ArgumentNullException(nameof(callback));
+            }
+
+            public Type EventType { get; }
+            public Func<IServiceProvider, object, CancellationToken, ValueTask> Callback { get; }
+        }
 
         public InMemoryEventBus(
             IServiceScopeFactory scopeFactory,
@@ -37,6 +54,7 @@ namespace Mubai.EventBus.InMemory
             _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
             _logger = logger ?? NullLogger<InMemoryEventBus>.Instance;
             _options = (options ?? InMemoryEventBusOptions.Default).CloneAndNormalize();
+            _serializerOptions = _options.SerializerOptions;
         }
 
         public async ValueTask PublishAsync<TEvent>(TEvent @event, CancellationToken cancellationToken = default)
@@ -48,31 +66,48 @@ namespace Mubai.EventBus.InMemory
                 throw new ArgumentNullException(nameof(@event));
             }
 
+            var eventName = ResolveEventName(typeof(TEvent));
+
             // Idempotence: ensure we only process each event id once per process lifetime.
-            if (!_processedEvents.TryAdd(@event.Id, 0))
+            if (!TryMarkEventProcessed(@event.Id))
             {
                 _logger.LogDebug("Event {EventId} of type {EventType} already processed, skipping.", @event.Id, typeof(TEvent).Name);
                 return;
             }
 
-            if (!_handlers.TryGetValue(typeof(TEvent), out var handlers) || handlers.IsEmpty)
+            if (!_handlers.TryGetValue(eventName, out var handlers) || handlers.IsEmpty)
             {
                 _logger.LogDebug("No handlers registered for event {EventType}", typeof(TEvent).Name);
+                RemoveProcessedEvent(@event.Id, "no handlers registered", null, LogLevel.Debug);
                 return;
             }
 
-            var callbacks = handlers.Values.ToArray();
-
-            using var scope = _scopeFactory.CreateScope();
-            var provider = scope.ServiceProvider;
-
-            foreach (var callback in callbacks)
+            var registrations = handlers.Values.ToArray();
+            SemaphoreSlim concurrencyLimiter = null;
+            if (_options.MaxParallelHandlers > 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                await InvokeWithRetryAsync(
-                    () => callback(provider, @event, cancellationToken),
-                    @event,
-                    cancellationToken).ConfigureAwait(false);
+                concurrencyLimiter = new SemaphoreSlim(_options.MaxParallelHandlers);
+            }
+
+            try
+            {
+                var tasks = new Task[registrations.Length];
+                for (var i = 0; i < registrations.Length; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    tasks[i] = ExecuteHandlerAsync(registrations[i], @event, concurrencyLimiter, cancellationToken);
+                }
+
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+            }
+            catch (Exception publishException)
+            {
+                RemoveProcessedEvent(@event.Id, "handler failure", publishException, LogLevel.Warning);
+                throw;
+            }
+            finally
+            {
+                concurrencyLimiter?.Dispose();
             }
         }
 
@@ -83,23 +118,24 @@ namespace Mubai.EventBus.InMemory
             ThrowIfDisposed();
             cancellationToken.ThrowIfCancellationRequested();
 
+            var eventName = ResolveEventName(typeof(TEvent));
             var handlers = _handlers.GetOrAdd(
-                typeof(TEvent),
-                _ => new ConcurrentDictionary<object, Func<IServiceProvider, object, CancellationToken, ValueTask>>());
+                eventName,
+                _ => new ConcurrentDictionary<object, HandlerRegistration>());
 
             var handlerKey = typeof(THandler);
-            handlers[handlerKey] = async (provider, evt, ct) =>
+            handlers[handlerKey] = new HandlerRegistration(typeof(TEvent), async (provider, evt, ct) =>
             {
                 var handler = provider.GetRequiredService<THandler>();
                 await handler.HandleAsync((TEvent)evt, ct).ConfigureAwait(false);
-            };
+            });
 
-            _logger.LogInformation("Subscribed handler {Handler} to event {EventType}", typeof(THandler).FullName, typeof(TEvent).Name);
+            _logger.LogInformation("Subscribed handler {Handler} to event {EventType} ({EventName})", typeof(THandler).FullName, typeof(TEvent).Name, eventName);
 
             return new ValueTask<IDisposable>(new Subscription(() =>
             {
-                Remove(typeof(TEvent), handlerKey);
-                _logger.LogInformation("Unsubscribed handler {Handler} from event {EventType}", typeof(THandler).FullName, typeof(TEvent).Name);
+                Remove(eventName, handlerKey);
+                _logger.LogInformation("Unsubscribed handler {Handler} from event {EventType} ({EventName})", typeof(THandler).FullName, typeof(TEvent).Name, eventName);
             }));
         }
 
@@ -115,18 +151,19 @@ namespace Mubai.EventBus.InMemory
                 throw new ArgumentNullException(nameof(handler));
             }
 
+            var eventName = ResolveEventName(typeof(TEvent));
             var handlers = _handlers.GetOrAdd(
-                typeof(TEvent),
-                _ => new ConcurrentDictionary<object, Func<IServiceProvider, object, CancellationToken, ValueTask>>());
+                eventName,
+                _ => new ConcurrentDictionary<object, HandlerRegistration>());
 
-            handlers[handler] = (_, evt, ct) => handler((TEvent)evt, ct);
+            handlers[handler] = new HandlerRegistration(typeof(TEvent), (_, evt, ct) => handler((TEvent)evt, ct));
 
-            _logger.LogInformation("Subscribed inline handler to event {EventType}", typeof(TEvent).Name);
+            _logger.LogInformation("Subscribed inline handler to event {EventType} ({EventName})", typeof(TEvent).Name, eventName);
 
             return new ValueTask<IDisposable>(new Subscription(() =>
             {
-                Remove(typeof(TEvent), handler);
-                _logger.LogInformation("Unsubscribed inline handler from event {EventType}", typeof(TEvent).Name);
+                Remove(eventName, handler);
+                _logger.LogInformation("Unsubscribed inline handler from event {EventType} ({EventName})", typeof(TEvent).Name, eventName);
             }));
         }
 
@@ -137,8 +174,9 @@ namespace Mubai.EventBus.InMemory
             ThrowIfDisposed();
             cancellationToken.ThrowIfCancellationRequested();
 
-            Remove(typeof(TEvent), typeof(THandler));
-            _logger.LogInformation("Unsubscribed handler {Handler} from event {EventType}", typeof(THandler).FullName, typeof(TEvent).Name);
+            var eventName = ResolveEventName(typeof(TEvent));
+            Remove(eventName, typeof(THandler));
+            _logger.LogInformation("Unsubscribed handler {Handler} from event {EventType} ({EventName})", typeof(THandler).FullName, typeof(TEvent).Name, eventName);
 
             return default;
         }
@@ -155,22 +193,53 @@ namespace Mubai.EventBus.InMemory
                 throw new ArgumentNullException(nameof(handler));
             }
 
-            Remove(typeof(TEvent), handler);
-            _logger.LogInformation("Unsubscribed inline handler from event {EventType}", typeof(TEvent).Name);
+            var eventName = ResolveEventName(typeof(TEvent));
+            Remove(eventName, handler);
+            _logger.LogInformation("Unsubscribed inline handler from event {EventType} ({EventName})", typeof(TEvent).Name, eventName);
 
             return default;
         }
 
-        private void Remove(Type eventType, object handlerKey)
+        private void Remove(string eventName, object handlerKey)
         {
-            if (_handlers.TryGetValue(eventType, out var handlers))
+            if (_handlers.TryGetValue(eventName, out var handlers))
             {
                 handlers.TryRemove(handlerKey, out _);
 
                 if (handlers.IsEmpty)
                 {
-                    _handlers.TryRemove(eventType, out _);
+                    _handlers.TryRemove(eventName, out _);
                 }
+            }
+        }
+
+        private async Task ExecuteHandlerAsync(
+            HandlerRegistration registration,
+            IntegrationEvent @event,
+            SemaphoreSlim concurrencyLimiter,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (concurrencyLimiter is not null)
+            {
+                await concurrencyLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var provider = scope.ServiceProvider;
+
+                var payload = ConvertEvent(@event, registration.EventType);
+                await InvokeWithRetryAsync(
+                    () => registration.Callback(provider, payload, cancellationToken),
+                    @event,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                concurrencyLimiter?.Release();
             }
         }
 
@@ -184,6 +253,97 @@ namespace Mubai.EventBus.InMemory
             _disposed = true;
             _handlers.Clear();
             _processedEvents.Clear();
+            while (_processedEventOrder.TryDequeue(out _))
+            {
+            }
+        }
+
+        private static string ResolveEventName(Type eventType)
+        {
+            var attribute = eventType.GetCustomAttribute<EventNameAttribute>();
+            return string.IsNullOrWhiteSpace(attribute?.Name) ? eventType.Name : attribute.Name;
+        }
+
+        private bool TryMarkEventProcessed(Guid eventId)
+        {
+            if (!_options.EnableIdempotence)
+            {
+                return true;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            CleanupProcessedEvents(now);
+
+            if (_processedEvents.TryAdd(eventId, now))
+            {
+                _processedEventOrder.Enqueue((eventId, now));
+                return true;
+            }
+
+            return false;
+        }
+
+        private void CleanupProcessedEvents(DateTimeOffset now)
+        {
+            if (!_options.EnableIdempotence)
+            {
+                return;
+            }
+
+            var ttl = _options.ProcessedEventTtl;
+            var capacity = _options.ProcessedEventCapacity;
+
+            if (ttl <= TimeSpan.Zero && capacity <= 0)
+            {
+                return;
+            }
+
+            while (_processedEventOrder.TryPeek(out var entry))
+            {
+                var expired = ttl > TimeSpan.Zero && now - entry.Timestamp >= ttl;
+                var overCapacity = capacity > 0 && _processedEvents.Count > capacity;
+                if (!expired && !overCapacity)
+                {
+                    break;
+                }
+
+                if (_processedEventOrder.TryDequeue(out var removed))
+                {
+                    if (expired)
+                    {
+                        RemoveProcessedEvent(removed.EventId, "entry expired", null, LogLevel.Debug);
+                    }
+                    else if (overCapacity)
+                    {
+                        RemoveProcessedEvent(removed.EventId, "capacity limit", null, LogLevel.Debug);
+                    }
+                }
+            }
+        }
+
+        private void RemoveProcessedEvent(Guid eventId, string reason, Exception exception = null, LogLevel level = LogLevel.Information)
+        {
+            if (!_options.EnableIdempotence)
+            {
+                return;
+            }
+
+            if (_processedEvents.TryRemove(eventId, out _))
+            {
+                _logger.Log(level, exception, "Removed processed event {EventId} due to {Reason}.", eventId, reason);
+            }
+        }
+
+        private object ConvertEvent(object sourceEvent, Type targetType)
+        {
+            if (targetType.IsInstanceOfType(sourceEvent))
+            {
+                return sourceEvent;
+            }
+
+            var json = JsonSerializer.Serialize(sourceEvent, sourceEvent.GetType(), _serializerOptions);
+            var deserialized = JsonSerializer.Deserialize(json, targetType, _serializerOptions);
+            return deserialized ?? throw new InvalidOperationException($"Failed to deserialize event {sourceEvent.GetType().Name} to {targetType.Name}.");
         }
 
         private void ThrowIfDisposed()
@@ -216,7 +376,8 @@ namespace Mubai.EventBus.InMemory
                 }
                 catch (Exception ex)
                 {
-                    var shouldRetry = attempt < maxAttempts && (_options.ShouldRetry?.Invoke(ex) ?? false);
+                    var isNonRetryable = ex is NonRetryableException;
+                    var shouldRetry = !isNonRetryable && attempt < maxAttempts && (_options.ShouldRetry?.Invoke(ex) ?? false);
 
                     _logger.LogWarning(
                         ex,

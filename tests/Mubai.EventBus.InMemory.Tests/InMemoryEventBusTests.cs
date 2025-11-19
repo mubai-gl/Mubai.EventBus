@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Mubai.EventBus.Abstractions;
 using Mubai.EventBus.Events;
 using Mubai.EventBus.InMemory;
+using Mubai.EventBus.Exceptions;
 using Xunit;
 
 namespace Mubai.EventBus.InMemory.Tests;
@@ -302,6 +303,164 @@ public class InMemoryEventBusTests
     }
 
     [Fact]
+    public async Task PublishAsync_FailureAllowsRetryingSameEvent()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddInMemoryEventBus(options =>
+        {
+            options.MaxRetryAttempts = 1;
+            options.InitialRetryDelay = TimeSpan.Zero;
+            options.ShouldRetry = _ => false;
+        });
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var attempts = 0;
+        var shouldFail = true;
+        await bus.SubscribeAsync<TestEvent>((evt, token) =>
+        {
+            Interlocked.Increment(ref attempts);
+            if (shouldFail)
+            {
+                throw new InvalidOperationException("boom");
+            }
+
+            return ValueTask.CompletedTask;
+        });
+
+        var evtInstance = new TestEvent("first");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => bus.PublishAsync(evtInstance).AsTask());
+
+        shouldFail = false;
+        await bus.PublishAsync(evtInstance);
+
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task PublishAsync_IdempotenceCanBeDisabled()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus(options => options.EnableIdempotence = false);
+
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var deliveries = 0;
+        var sharedEvent = new DuplicateEvent(Guid.NewGuid());
+        await bus.SubscribeAsync<DuplicateEvent>((evt, token) =>
+        {
+            Interlocked.Increment(ref deliveries);
+            return ValueTask.CompletedTask;
+        });
+
+        await bus.PublishAsync(sharedEvent);
+        await bus.PublishAsync(sharedEvent);
+
+        Assert.Equal(2, deliveries);
+    }
+
+    [Fact]
+    public async Task PublishAsync_MaxParallelHandlersRespected()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus(options =>
+        {
+            options.MaxParallelHandlers = 2;
+        });
+
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var current = 0;
+        var maxObserved = 0;
+
+        async ValueTask Handler(TestEvent evt, CancellationToken token)
+        {
+            var inFlight = Interlocked.Increment(ref current);
+            var snapshot = maxObserved;
+            while (inFlight > snapshot)
+            {
+                var previous = Interlocked.CompareExchange(ref maxObserved, inFlight, snapshot);
+                if (previous == snapshot)
+                {
+                    break;
+                }
+
+                snapshot = previous;
+            }
+
+            try
+            {
+                await Task.Delay(50, token);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref current);
+            }
+        }
+
+        for (var i = 0; i < 5; i++)
+        {
+            await bus.SubscribeAsync<TestEvent>(Handler);
+        }
+
+        await bus.PublishAsync(new TestEvent("parallel"));
+
+        Assert.InRange(maxObserved, 1, 2);
+    }
+
+    [Fact]
+    public async Task PublishAsync_NonRetryableException_StopsRetry()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddInMemoryEventBus(options =>
+        {
+            options.ShouldRetry = _ => true;
+            options.MaxRetryAttempts = 5;
+            options.InitialRetryDelay = TimeSpan.Zero;
+        });
+
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        var attempts = 0;
+        await bus.SubscribeAsync<TestEvent>((evt, token) =>
+        {
+            Interlocked.Increment(ref attempts);
+            throw new NonRetryableException("stop");
+        });
+
+        await Assert.ThrowsAsync<NonRetryableException>(() => bus.PublishAsync(new TestEvent("non-retry")).AsTask());
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task PublishAsync_UsesCustomSerializerOptions()
+    {
+        var services = new ServiceCollection();
+        services.AddInMemoryEventBus(options =>
+        {
+            options.SerializerOptions.PropertyNameCaseInsensitive = true;
+        });
+        var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<IEventBus>();
+
+        string? observed = null;
+        await bus.SubscribeAsync<AlternatePayloadEvent>((evt, token) =>
+        {
+            observed = evt.payload;
+            return ValueTask.CompletedTask;
+        });
+
+        await bus.PublishAsync(new PascalPayloadEvent("UPPER"));
+
+        Assert.Equal("UPPER", observed);
+    }
+
+    [Fact]
     public async Task PublishAsync_MultipleHandlers_AllReceiveEvent()
     {
         var services = new ServiceCollection();
@@ -394,6 +553,14 @@ public class InMemoryEventBusTests
 
     private sealed record DuplicateEvent(Guid EventId)
         : IntegrationEvent(EventId, DateTimeOffset.UtcNow);
+
+    [EventName("SharedPayloadEvent")]
+    private sealed record PascalPayloadEvent(string Payload)
+        : IntegrationEvent(Guid.NewGuid(), DateTimeOffset.UtcNow);
+
+    [EventName("SharedPayloadEvent")]
+    private sealed record AlternatePayloadEvent(string payload)
+        : IntegrationEvent(Guid.NewGuid(), DateTimeOffset.UtcNow);
 
     private sealed class TestHandler : IIntegrationEventHandler<TestEvent>
     {

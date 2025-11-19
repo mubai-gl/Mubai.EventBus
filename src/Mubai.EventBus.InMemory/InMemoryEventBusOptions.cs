@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Net.Http;
+using System.Text.Json;
 using Mubai.EventBus.Events;
 using Mubai.EventBus.Exceptions;
 
@@ -44,6 +45,31 @@ namespace Mubai.EventBus.InMemory
         /// </summary>
         public Action<IntegrationEvent, Exception, int> OnHandlerFailed { get; set; }
 
+        /// <summary>
+        /// Whether to enable in-memory idempotence tracking for published events.
+        /// </summary>
+        public bool EnableIdempotence { get; set; } = true;
+
+        /// <summary>
+        /// Optional time-to-live for processed event entries. Zero disables TTL eviction.
+        /// </summary>
+        public TimeSpan ProcessedEventTtl { get; set; } = TimeSpan.FromMinutes(10);
+
+        /// <summary>
+        /// Maximum number of processed event ids kept in-memory. Zero disables capacity enforcement.
+        /// </summary>
+        public int ProcessedEventCapacity { get; set; } = 10000;
+
+        /// <summary>
+        /// Maximum number of handlers processed concurrently per publish call. Zero means no limit.
+        /// </summary>
+        public int MaxParallelHandlers { get; set; }
+
+        /// <summary>
+        /// Serializer options used when converting events between compatible types.
+        /// </summary>
+        public JsonSerializerOptions SerializerOptions { get; set; } = new JsonSerializerOptions();
+
         internal InMemoryEventBusOptions CloneAndNormalize()
         {
             var copy = new InMemoryEventBusOptions
@@ -53,7 +79,14 @@ namespace Mubai.EventBus.InMemory
                 BackoffFactor = BackoffFactor < 1d ? 1d : BackoffFactor,
                 UseExponentialBackoff = UseExponentialBackoff,
                 ShouldRetry = ShouldRetry ?? DefaultShouldRetry,
-                OnHandlerFailed = OnHandlerFailed
+                OnHandlerFailed = OnHandlerFailed,
+                EnableIdempotence = EnableIdempotence,
+                ProcessedEventTtl = ProcessedEventTtl < TimeSpan.Zero ? TimeSpan.Zero : ProcessedEventTtl,
+                ProcessedEventCapacity = ProcessedEventCapacity < 0 ? 0 : ProcessedEventCapacity,
+                MaxParallelHandlers = MaxParallelHandlers < 0 ? 0 : MaxParallelHandlers,
+                SerializerOptions = SerializerOptions is null
+                    ? new JsonSerializerOptions()
+                    : new JsonSerializerOptions(SerializerOptions)
             };
 
             return copy;
