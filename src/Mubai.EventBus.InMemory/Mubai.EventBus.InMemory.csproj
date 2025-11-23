@@ -6,7 +6,7 @@
 		
 		<!-- NuGet info -->
 		<PackageId>Mubai.EventBus.InMemory</PackageId>
-		<Version>0.2.0</Version>
+		<Version>0.2.1</Version>
 		<Title>Mubai.EventBus.InMemory</Title>
 		<Description>In-memory event bus for modular monolith .NET applications, suitable for simple event-driven communication, development, and testing.</Description>
 		<Authors>mubai-gl</Authors>

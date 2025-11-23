@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,11 +19,10 @@ namespace Mubai.EventBus.InMemory
         /// </summary>
         public static IServiceCollection AddInMemoryEventBus(this IServiceCollection services)
         {
-            services.TryAddSingleton<IEventBus>(provider =>
+            services.TryAddScoped<IEventBus>(provider =>
             {
-                var scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
                 var logger = provider.GetService<ILogger<InMemoryEventBus>>() ?? NullLogger<InMemoryEventBus>.Instance;
-                return new InMemoryEventBus(scopeFactory, logger);
+                return new InMemoryEventBus(provider, logger);
             });
             return services;
         }

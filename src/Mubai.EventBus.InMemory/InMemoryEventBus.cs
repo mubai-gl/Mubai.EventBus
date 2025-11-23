@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
@@ -17,7 +17,7 @@ namespace Mubai.EventBus.InMemory
     /// </summary>
     public sealed class InMemoryEventBus : IEventBus, IDisposable
     {
-        private readonly IServiceScopeFactory _scopeFactory;
+        private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<InMemoryEventBus> _logger;
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<object, HandlerRegistration>> _handlers = new();
 
@@ -36,10 +36,10 @@ namespace Mubai.EventBus.InMemory
         }
 
         public InMemoryEventBus(
-            IServiceScopeFactory scopeFactory,
+            IServiceProvider serviceProvider,
             ILogger<InMemoryEventBus> logger)
         {
-            _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
             _logger = logger ?? NullLogger<InMemoryEventBus>.Instance;
         }
 
@@ -181,11 +181,9 @@ namespace Mubai.EventBus.InMemory
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            using var scope = _scopeFactory.CreateScope();
-            var provider = scope.ServiceProvider;
             try
             {
-                await registration.Invoker(provider, @event, cancellationToken).ConfigureAwait(false);
+                await registration.Invoker(_serviceProvider, @event, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
