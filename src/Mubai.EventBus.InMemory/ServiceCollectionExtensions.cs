@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,30 +15,21 @@ namespace Mubai.EventBus.InMemory
     public static class ServiceCollectionExtensions
     {
         /// <summary>
-        /// Register the in-memory event bus.
+        /// Register the in-process in-memory event bus.
         /// </summary>
-        public static IServiceCollection AddInMemoryEventBus(
-            this IServiceCollection services,
-            Action<InMemoryEventBusOptions> configure = null)
+        public static IServiceCollection AddInMemoryEventBus(this IServiceCollection services)
         {
             services.TryAddSingleton<IEventBus>(provider =>
             {
                 var scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
                 var logger = provider.GetService<ILogger<InMemoryEventBus>>() ?? NullLogger<InMemoryEventBus>.Instance;
-                var options = InMemoryEventBusOptions.Default;
-                if (configure is not null)
-                {
-                    options = new InMemoryEventBusOptions();
-                    configure(options);
-                }
-
-                return new InMemoryEventBus(scopeFactory, logger, options);
+                return new InMemoryEventBus(scopeFactory, logger);
             });
             return services;
         }
 
         /// <summary>
-        /// Scan and register all <see cref="IIntegrationEventHandler{TEvent}"/> implementations.
+        /// Scan and register all IIntegrationEventHandler implementations from assemblies.
         /// </summary>
         public static IServiceCollection AddIntegrationEventHandlersFromAssemblies(
             this IServiceCollection services,

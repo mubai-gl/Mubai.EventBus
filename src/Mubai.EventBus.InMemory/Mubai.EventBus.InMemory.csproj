@@ -1,22 +1,26 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
 		<TargetFramework>netstandard2.0</TargetFramework>
 		<LangVersion>latest</LangVersion>
+		
 		<!-- NuGet info -->
 		<PackageId>Mubai.EventBus.InMemory</PackageId>
-		<Version>0.1.5</Version>
+		<Version>0.2.0</Version>
 		<Title>Mubai.EventBus.InMemory</Title>
 		<Description>In-memory event bus for modular monolith .NET applications, suitable for simple event-driven communication, development, and testing.</Description>
 		<Authors>mubai-gl</Authors>
 		<Company>mubai-gl</Company>
-		<Copyright>© 2025 mubai-gl. All rights reserved.</Copyright>
+		<Copyright>? 2025 mubai-gl. All rights reserved.</Copyright>
+		<PackageTags>event-bus;in-memory;in-process;modular-monolith;dotnet;di;events</PackageTags>
 		<PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
-
+		
 		<!-- Project info -->
 		<PackageProjectUrl>https://github.com/mubai-gl/Mubai.EventBus</PackageProjectUrl>
+		<PackageIcon>eventbus.png</PackageIcon>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
-
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+		
 		<!-- Repository info -->
 		<RepositoryType>git</RepositoryType>
 		<RepositoryUrl>https://github.com/mubai-gl/Mubai.EventBus.git</RepositoryUrl>
@@ -25,8 +29,11 @@
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
-		<PackageReference Include="Mubai.EventBus" Version="0.1.5" />
-		<PackageReference Include="System.Text.Json" Version="10.0.0" />
+		<PackageReference Include="Mubai.EventBus" Version="0.2.0" />
 	</ItemGroup>
-
+	
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="" />
+		<None Include="..\..\resources\eventbus.png" Pack="true" PackagePath="\" />
+	</ItemGroup>
 </Project>

@@ -3,19 +3,23 @@
 	<PropertyGroup>
 		<TargetFramework>netstandard2.0</TargetFramework>
 		<LangVersion>latest</LangVersion>
+		
 		<!-- NuGet info -->
 		<PackageId>Mubai.EventBus</PackageId>
-		<Version>0.1.5</Version>
-		<Title>Mubai.EventBus</Title>
+		<Version>0.2.0</Version>
+		<Title>Muba.EventBus</Title>
 		<Description>Core abstractions for event-driven communication in .NET applications, including event bus, event handlers, and integration events.</Description>
 		<Authors>mubai-gl</Authors>
 		<Company>mubai-gl</Company>
 		<Copyright>© 2025 mubai-gl. All rights reserved.</Copyright>
+		<PackageTags>event-bus;integration-events;messaging;modular-monolith;dotnet;abstractions</PackageTags>
 		<PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
 
 		<!-- Project info -->
 		<PackageProjectUrl>https://github.com/mubai-gl/Mubai.EventBus</PackageProjectUrl>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
+		<PackageIcon>eventbus.png</PackageIcon>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
 
 		<!-- Repository info -->
 		<RepositoryType>git</RepositoryType>
@@ -25,5 +29,9 @@
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.0" />
 	</ItemGroup>
-
+	
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="" />
+		<None Include="..\..\resources\eventbus.png" Pack="true" PackagePath="\" />
+	</ItemGroup>
 </Project>

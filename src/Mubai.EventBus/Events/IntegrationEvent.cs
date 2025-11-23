@@ -17,6 +17,13 @@ namespace Mubai.EventBus.Events
         /// </summary>
         public DateTimeOffset OccurredOn { get; }
 
+        /// <summary>
+        /// Create an event with a generated Id and current UTC timestamp.
+        /// </summary>
+        protected IntegrationEvent() : this(Guid.NewGuid(), DateTimeOffset.UtcNow)
+        {
+        }
+
         public IntegrationEvent(Guid id, DateTimeOffset occurredOn)
         {
             Id = id;
