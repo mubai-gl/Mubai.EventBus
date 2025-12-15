@@ -6,6 +6,7 @@ Event-driven building blocks for .NET: a transport-agnostic abstraction package 
 ## Packages
 - **Mubai.EventBus**: contracts only - `IntegrationEvent`, `IEventBus`, `IIntegrationEventHandler<TEvent>`, and `EventNameAttribute`.
 - **Mubai.EventBus.InMemory**: synchronous, in-process, in-memory event bus that routes by `EventNameAttribute` (fallback to type name); DI-friendly (scoped bus that resolves handlers from the caller scope); no persistence/retry/queue.
+- **Mubai.EventBus.RabbitMQ**: RabbitMQ transport with topic/direct exchanges, routing key `{service}.{domain}.{event}`, JSON serializer carrying `x-version`/`x-schema` headers, DI extensions, and an Outbox dispatcher.
 
 ## Install
 ```bash
@@ -80,6 +81,28 @@ public sealed class OrdersDbContext : DbContext
 
 public sealed record Order(Guid Id);
 ```
+
+### RabbitMQ transport (topic + direct)
+```csharp
+services.AddRabbitMqEventBus(
+    options =>
+    {
+        options.ServiceName = "orders";
+        options.Domain = "sales";
+        // options.TopicExchangeName = "events-topic";
+        // options.DirectExchangeName = "events-direct";
+        // options.QueueName = "orders.events";
+    },
+    connection =>
+    {
+        connection.HostName = "localhost";
+        connection.UserName = "guest";
+        connection.Password = "guest";
+        connection.DispatchConsumersAsync = true;
+    });
+services.AddIntegrationEventHandlersFromAssemblyContaining<OrderCreatedHandler>();
+```
+事件名来自 `EventNameAttribute`（无则用类型名），发布/订阅路由键为 `{service}.{domain}.{event}`，Exchange 同时发布到 topic/direct，序列化为 JSON 并附带 `x-version`/`x-schema` 头。队列命名默认 `{service}.events`，启动时自动声明 exchange/queue/bindings（可通过 `RabbitMqOptions.DeclareTopology` 控制）。
 
 ## Event names
 Use `EventNameAttribute` to define a stable name independent of the CLR type:
